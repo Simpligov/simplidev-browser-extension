@@ -1,19 +1,19 @@
 /**
  * SimpliDev Browser Extension
  * 
- * SignalR connection to Sid Voice server for remote browser control.
+ * WebSocket connection to Sid Voice server for remote browser control.
  * This enables voice commands to control the user's browser.
  */
 
-import * as signalR from '@microsoft/signalr';
 import { debugLog } from './relayConnection';
 
-// Sid Voice server endpoints
-const VOICE_SERVER_PROD = 'https://simplidev.dev.simpligov.com';
-const VOICE_SERVER_STAGE = 'https://simplidev-stage.dev.simpligov.com';
+// Sid Voice server endpoints (uses wss:// for WebSocket)
+const VOICE_SERVER_PROD = 'wss://simplidev.dev.simpligov.com';
+const VOICE_SERVER_STAGE = 'wss://simplidev-stage.dev.simpligov.com';
 
 export interface BrowserCommand {
   type: 'navigate' | 'click' | 'type' | 'snapshot' | 'screenshot' | 'getTabs' | 'selectTab';
+  id?: string; // Command ID for response correlation
   url?: string;
   selector?: string;
   text?: string;
@@ -21,18 +21,23 @@ export interface BrowserCommand {
 }
 
 export interface BrowserResponse {
+  type: 'response';
+  id?: string; // Correlate with command ID
   success: boolean;
   data?: unknown;
   error?: string;
 }
 
 export class SidVoiceConnection {
-  private _connection: signalR.HubConnection | null = null;
+  private _ws: WebSocket | null = null;
   private _email: string = '';
   private _debuggee: chrome.debugger.Debuggee = {};
   private _connectedTabId: number | null = null;
   private _eventListener: ((source: chrome.debugger.DebuggerSession, method: string, params: unknown) => void) | null = null;
   private _serverUrl: string = VOICE_SERVER_PROD;
+  private _reconnectAttempts: number = 0;
+  private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _pingTimer: ReturnType<typeof setInterval> | null = null;
 
   onStatusChange?: (connected: boolean, email?: string) => void;
   onError?: (error: string) => void;
@@ -64,63 +69,128 @@ export class SidVoiceConnection {
 
     debugLog(`Connecting to Sid Voice at ${this._serverUrl} as ${email}`);
 
-    try {
-      this._connection = new signalR.HubConnectionBuilder()
-        .withUrl(`${this._serverUrl}/browser-hub`, {
-          headers: {
-            'X-Simplidev-Email': email,
-          },
-        })
-        .withAutomaticReconnect({
-          nextRetryDelayInMilliseconds: (retryContext) => {
-            // Exponential backoff: 0, 2, 4, 8, 16, 30, 30, 30...
-            const delay = Math.min(Math.pow(2, retryContext.previousRetryCount) * 1000, 30000);
-            debugLog(`Reconnecting in ${delay}ms (attempt ${retryContext.previousRetryCount + 1})`);
-            return delay;
-          },
-        })
-        .configureLogging(signalR.LogLevel.Information)
-        .build();
+    return this._doConnect();
+  }
 
-      // Handle incoming commands from Sid Voice
-      this._connection.on('BrowserCommand', async (command: BrowserCommand) => {
-        debugLog('Received browser command:', command);
-        const response = await this._handleCommand(command);
-        await this._connection?.invoke('BrowserResponse', response);
-      });
+  private async _doConnect(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      try {
+        // Connect to the /browser WebSocket endpoint
+        const wsUrl = `${this._serverUrl}/browser?email=${encodeURIComponent(this._email)}`;
+        this._ws = new WebSocket(wsUrl);
 
-      // Handle connection state changes
-      this._connection.onreconnecting((error) => {
-        debugLog('Reconnecting to Sid Voice...', error);
-        this.onStatusChange?.(false);
-      });
+        this._ws.onopen = () => {
+          debugLog('Connected to Sid Voice browser endpoint');
+          this._reconnectAttempts = 0;
+          
+          // Send initial handshake
+          this._send({
+            type: 'register',
+            email: this._email,
+          });
+          
+          // Start ping/pong keepalive
+          this._startPing();
+          
+          this.onStatusChange?.(true, this._email);
+          resolve();
+        };
 
-      this._connection.onreconnected(() => {
-        debugLog('Reconnected to Sid Voice');
-        this.onStatusChange?.(true, this._email);
-      });
+        this._ws.onmessage = async (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'command') {
+              debugLog('Received browser command:', data);
+              const response = await this._handleCommand(data as BrowserCommand);
+              response.id = data.id;
+              this._send(response);
+            } else if (data.type === 'pong') {
+              // Keepalive response
+            } else if (data.type === 'registered') {
+              debugLog('Registered with Sid Voice server');
+            }
+          } catch (error) {
+            debugLog('Error parsing message:', error);
+          }
+        };
 
-      this._connection.onclose((error) => {
-        debugLog('Disconnected from Sid Voice', error);
-        this.onStatusChange?.(false);
-        this._cleanup();
-      });
+        this._ws.onclose = (event) => {
+          debugLog('Disconnected from Sid Voice:', event.code, event.reason);
+          this._stopPing();
+          this.onStatusChange?.(false);
+          
+          // Attempt reconnect if not intentional disconnect
+          if (event.code !== 1000 && this._email) {
+            this._scheduleReconnect();
+          }
+        };
 
-      await this._connection.start();
-      debugLog('Connected to Sid Voice');
-      this.onStatusChange?.(true, this._email);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      debugLog('Failed to connect to Sid Voice:', message);
-      this.onError?.(message);
-      throw error;
+        this._ws.onerror = (error) => {
+          debugLog('WebSocket error:', error);
+          this.onError?.('Connection error');
+          reject(new Error('Connection error'));
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        debugLog('Failed to connect to Sid Voice:', message);
+        this.onError?.(message);
+        reject(error);
+      }
+    });
+  }
+
+  private _scheduleReconnect(): void {
+    if (this._reconnectTimer) return;
+    
+    // Exponential backoff: 1, 2, 4, 8, 16, 30, 30, 30...
+    const delay = Math.min(Math.pow(2, this._reconnectAttempts) * 1000, 30000);
+    this._reconnectAttempts++;
+    
+    debugLog(`Scheduling reconnect in ${delay}ms (attempt ${this._reconnectAttempts})`);
+    
+    this._reconnectTimer = setTimeout(async () => {
+      this._reconnectTimer = null;
+      try {
+        await this._doConnect();
+      } catch {
+        // Will schedule another reconnect via onclose
+      }
+    }, delay);
+  }
+
+  private _startPing(): void {
+    this._stopPing();
+    this._pingTimer = setInterval(() => {
+      if (this._ws?.readyState === WebSocket.OPEN) {
+        this._send({ type: 'ping' });
+      }
+    }, 30000);
+  }
+
+  private _stopPing(): void {
+    if (this._pingTimer) {
+      clearInterval(this._pingTimer);
+      this._pingTimer = null;
+    }
+  }
+
+  private _send(data: object): void {
+    if (this._ws?.readyState === WebSocket.OPEN) {
+      this._ws.send(JSON.stringify(data));
     }
   }
 
   async disconnect(): Promise<void> {
-    if (this._connection) {
-      await this._connection.stop();
-      this._connection = null;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    this._stopPing();
+    
+    if (this._ws) {
+      this._ws.close(1000, 'User disconnected');
+      this._ws = null;
     }
     this._cleanup();
     this.onStatusChange?.(false);
@@ -156,11 +226,11 @@ export class SidVoiceConnection {
         case 'screenshot':
           return await this._getScreenshot();
         default:
-          return { success: false, error: `Unknown command: ${command.type}` };
+          return { type: 'response', success: false, error: `Unknown command: ${command.type}` };
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return { success: false, error: message };
+      return { type: 'response', success: false, error: message };
     }
   }
 
@@ -175,7 +245,7 @@ export class SidVoiceConnection {
       this._connectedTabId = tab.id!;
     }
 
-    return { success: true, data: { tabId: this._connectedTabId } };
+    return { type: 'response', success: true, data: { tabId: this._connectedTabId } };
   }
 
   private async _getTabs(): Promise<BrowserResponse> {
@@ -189,7 +259,7 @@ export class SidVoiceConnection {
         active: tab.active,
       }));
     
-    return { success: true, data: { tabs: filteredTabs, connectedTabId: this._connectedTabId } };
+    return { type: 'response', success: true, data: { tabs: filteredTabs, connectedTabId: this._connectedTabId } };
   }
 
   private async _selectTab(tabId: number): Promise<BrowserResponse> {
@@ -197,7 +267,7 @@ export class SidVoiceConnection {
     
     const tab = await chrome.tabs.get(tabId);
     if (!tab) {
-      return { success: false, error: 'Tab not found' };
+      return { type: 'response', success: false, error: 'Tab not found' };
     }
 
     this._connectedTabId = tabId;
@@ -206,12 +276,12 @@ export class SidVoiceConnection {
       await chrome.windows.update(tab.windowId, { focused: true });
     }
 
-    return { success: true, data: { tabId } };
+    return { type: 'response', success: true, data: { tabId } };
   }
 
   private async _click(selector: string): Promise<BrowserResponse> {
     if (!this._connectedTabId) {
-      return { success: false, error: 'No tab connected' };
+      return { type: 'response', success: false, error: 'No tab connected' };
     }
 
     debugLog('Clicking:', selector);
@@ -224,12 +294,12 @@ export class SidVoiceConnection {
       userGesture: true,
     });
 
-    return { success: true };
+    return { type: 'response', success: true };
   }
 
   private async _type(selector: string, text: string): Promise<BrowserResponse> {
     if (!this._connectedTabId) {
-      return { success: false, error: 'No tab connected' };
+      return { type: 'response', success: false, error: 'No tab connected' };
     }
 
     debugLog('Typing into:', selector, text);
@@ -247,12 +317,12 @@ export class SidVoiceConnection {
       userGesture: true,
     });
 
-    return { success: true };
+    return { type: 'response', success: true };
   }
 
   private async _getSnapshot(): Promise<BrowserResponse> {
     if (!this._connectedTabId) {
-      return { success: false, error: 'No tab connected' };
+      return { type: 'response', success: false, error: 'No tab connected' };
     }
 
     await this._ensureDebuggerAttached();
@@ -260,17 +330,17 @@ export class SidVoiceConnection {
     // Get accessibility tree
     const result = await chrome.debugger.sendCommand(this._debuggee, 'Accessibility.getFullAXTree') as { nodes: unknown[] };
     
-    return { success: true, data: { snapshot: result.nodes } };
+    return { type: 'response', success: true, data: { snapshot: result.nodes } };
   }
 
   private async _getScreenshot(): Promise<BrowserResponse> {
     if (!this._connectedTabId) {
-      return { success: false, error: 'No tab connected' };
+      return { type: 'response', success: false, error: 'No tab connected' };
     }
 
     const dataUrl = await chrome.tabs.captureVisibleTab();
     
-    return { success: true, data: { screenshot: dataUrl } };
+    return { type: 'response', success: true, data: { screenshot: dataUrl } };
   }
 
   private async _ensureDebuggerAttached(): Promise<void> {
@@ -302,7 +372,7 @@ export class SidVoiceConnection {
   }
 
   get isConnected(): boolean {
-    return this._connection?.state === signalR.HubConnectionState.Connected;
+    return this._ws?.readyState === WebSocket.OPEN;
   }
 
   get email(): string {

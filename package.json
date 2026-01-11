@@ -21,9 +21,7 @@
     "test": "playwright test",
     "clean": "rm -rf dist"
   },
-  "dependencies": {
-    "@microsoft/signalr": "^8.0.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@playwright/test": "^1.40.0",
     "@types/chrome": "^0.0.315",
