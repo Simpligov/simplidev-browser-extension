@@ -8,8 +8,8 @@
 import { debugLog } from './relayConnection';
 
 // Sid Voice server endpoints (uses wss:// for WebSocket)
-const VOICE_SERVER_PROD = 'wss://simplidev.dev.simpligov.com';
-const VOICE_SERVER_STAGE = 'wss://simplidev-stage.dev.simpligov.com';
+const VOICE_SERVER_PROD = 'wss://voice.dev.simpligov.com';
+const VOICE_SERVER_STAGE = 'wss://voice-stage.dev.simpligov.com';
 
 export interface BrowserCommand {
   type: 'navigate' | 'click' | 'type' | 'snapshot' | 'screenshot' | 'getTabs' | 'selectTab';
