@@ -1,0 +1,39 @@
+{
+  "name": "@simpligov/simplidev-browser-extension",
+  "version": "0.1.0",
+  "description": "SimpliDev Browser Extension - Sid Voice browser control",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SimpliGov/simplidev-browser-extension.git"
+  },
+  "homepage": "https://simplidev.dev.simpligov.com",
+  "engines": {
+    "node": ">=18"
+  },
+  "author": {
+    "name": "SimpliGov"
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc --project . && tsc --project tsconfig.ui.json && vite build && vite build --config vite.sw.config.mts",
+    "watch": "tsc --watch --project . & tsc --watch --project tsconfig.ui.json & vite build --watch & vite build --watch --config vite.sw.config.mts",
+    "test": "playwright test",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@microsoft/signalr": "^8.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "@types/chrome": "^0.0.315",
+    "@types/react": "^18.2.66",
+    "@types/react-dom": "^18.2.22",
+    "@vitejs/plugin-react": "^4.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.8.2",
+    "vite": "^5.4.21",
+    "vite-plugin-static-copy": "^3.1.1"
+  }
+}
