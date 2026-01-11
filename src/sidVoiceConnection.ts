@@ -99,8 +99,11 @@ export class SidVoiceConnection {
         this._ws.onmessage = async (event) => {
           try {
             const data = JSON.parse(event.data);
+            debugLog('Received message:', data.type);
             
-            if (data.type === 'command') {
+            // Handle browser commands (navigate, click, type, snapshot, screenshot, etc.)
+            const commandTypes = ['navigate', 'click', 'type', 'snapshot', 'screenshot', 'getTabs', 'selectTab'];
+            if (commandTypes.includes(data.type)) {
               debugLog('Received browser command:', data);
               const response = await this._handleCommand(data as BrowserCommand);
               response.id = data.id;
