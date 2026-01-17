@@ -19,7 +19,9 @@
     "build": "tsc --project . && tsc --project tsconfig.ui.json && vite build && vite build --config vite.sw.config.mts",
     "watch": "tsc --watch --project . & tsc --watch --project tsconfig.ui.json & vite build --watch & vite build --watch --config vite.sw.config.mts",
     "test": "playwright test",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "package": "npm run build && cd dist && zip -r ../simplidev-browser-extension.zip . && cd ..",
+    "package:release": "npm run package && cp simplidev-browser-extension.zip ../simplidev/resources/templates/ && node -p \"require('./package.json').version\" > ../simplidev/resources/templates/simplidev-browser-extension.zip.version && rm simplidev-browser-extension.zip"
   },
   "dependencies": {},
   "devDependencies": {
