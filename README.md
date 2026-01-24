@@ -43,15 +43,20 @@ Now you can control your browser with voice commands in Sid Voice!
 
 ## Architecture
 
-```
-User's Browser
-├── SimpliDev Extension
-│   ├── SignalR → Sid Voice Server (voice commands)
-│   └── WebSocket → Local MCP (Cursor IDE)
-│
-├── Jira Tab (authenticated)
-├── GitHub Tab
-└── Confluence Tab
+```mermaid
+flowchart LR
+    subgraph Browser[User's Browser]
+        Ext[SimpliDev Extension]
+        Jira[Jira Tab]
+        GitHub[GitHub Tab]
+        Confluence[Confluence Tab]
+    end
+
+    Ext <--> SignalR[Sid Voice Server]
+    Ext <--> MCP[Local MCP - Cursor IDE]
+    Ext --> Jira
+    Ext --> GitHub
+    Ext --> Confluence
 ```
 
 ## Development
